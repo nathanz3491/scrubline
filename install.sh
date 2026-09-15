@@ -31,10 +31,14 @@ detect_platform() {
     arm64|aarch64) arch=arm64 ;;
     *) die "unsupported architecture: $arch" ;;
   esac
-  [ "$os" = windows ] && [ "$arch" = arm64 ] && die "windows/arm64 is not published"
+  if [ "$os" = windows ] && [ "$arch" = arm64 ]; then
+    die "windows/arm64 is not published"
+  fi
   PLATFORM="${os}_${arch}"
   EXT=tar.gz
-  [ "$os" = windows ] && EXT=zip
+  if [ "$os" = windows ]; then
+    EXT=zip
+  fi
 }
 
 resolve_version() {
@@ -50,19 +54,22 @@ resolve_version() {
   [ -n "$VERSION" ] || die "could not determine the latest version"
 }
 
+# POSIX sh has no function-local variables, so anything assigned here is global.
+# The leading underscores keep this from clobbering the caller's state.
 verify_checksum() {
-  archive=$1
-  sums=$2
-  want=$(grep " $(basename "$archive")\$" "$sums" | awk '{print $1}')
-  [ -n "$want" ] || die "no checksum published for $(basename "$archive")"
+  _vc_file=$1
+  _vc_sums=$2
+  _vc_name=$(basename "$_vc_file")
+  _vc_want=$(grep " $_vc_name\$" "$_vc_sums" | awk '{print $1}')
+  [ -n "$_vc_want" ] || die "no checksum published for $_vc_name"
   if command -v sha256sum >/dev/null 2>&1; then
-    got=$(sha256sum "$archive" | awk '{print $1}')
+    _vc_got=$(sha256sum "$_vc_file" | awk '{print $1}')
   elif command -v shasum >/dev/null 2>&1; then
-    got=$(shasum -a 256 "$archive" | awk '{print $1}')
+    _vc_got=$(shasum -a 256 "$_vc_file" | awk '{print $1}')
   else
     die "this installer needs sha256sum or shasum to verify the download"
   fi
-  [ "$want" = "$got" ] || die "checksum mismatch for $(basename "$archive"): expected $want, got $got"
+  [ "$_vc_want" = "$_vc_got" ] || die "checksum mismatch for $_vc_name: expected $_vc_want, got $_vc_got"
   say "  checksum ok"
 }
 
