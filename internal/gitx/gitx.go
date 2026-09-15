@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // ErrNotARepo is returned by Discover when dir is not inside a git worktree.
@@ -64,6 +65,20 @@ func (r *Repo) CommitTree(tree, parent, message string) (string, error) {
 	}
 	args = append(args, "-m", message)
 	return run(r.Root, identityEnv, args...)
+}
+
+// CommitTreeAt is CommitTree with an explicit timestamp, so that rewriting the
+// timeline preserves when each snapshot was actually taken.
+func (r *Repo) CommitTreeAt(tree, parent, message string, when time.Time) (string, error) {
+	args := []string{"commit-tree", tree}
+	if parent != "" {
+		args = append(args, "-p", parent)
+	}
+	args = append(args, "-m", message)
+	stamp := when.Format(time.RFC3339)
+	env := append([]string{}, identityEnv...)
+	env = append(env, "GIT_AUTHOR_DATE="+stamp, "GIT_COMMITTER_DATE="+stamp)
+	return run(r.Root, env, args...)
 }
 
 var identityEnv = []string{

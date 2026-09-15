@@ -9,6 +9,8 @@ nothing across twelve files. `git stash` is not a time machine.
 `scrubline` runs a tape deck over your working tree: it records a snapshot every
 time you stop typing, and lets you wind back to any point and play from there.
 
+![scrubline restoring a working tree](docs/demo.gif)
+
 ```
 $ scrubline watch
 recording /home/you/project -- press Ctrl-C to stop
@@ -45,21 +47,41 @@ go install github.com/nathanz3491/scrubline@latest     # if you have Go
 Or download a binary from [the releases page](https://github.com/nathanz3491/scrubline/releases).
 
 Uninstall is `rm ~/.local/bin/scrubline`. Snapshots live inside the repository
-they belong to; `git update-ref -d refs/scrubline/timeline` removes them.
+they belong to; `git update-ref -d refs/scrubline/timeline` removes them, and
+`git gc --prune=now` reclaims the space.
 
 ## Use
 
 ```sh
 scrubline watch                 # record continuously while you work
+scrubline                       # browse the timeline
 scrubline snap -m "before the refactor"
 scrubline list                  # what have I got?
 scrubline show <id> --files     # what did that snapshot change?
 scrubline restore <id>          # put the tree back
 scrubline restore <id> --dry-run --path src/parser.go
+scrubline prune --older-than 7d # drop old snapshots
 ```
 
 Leave `scrubline watch` running in a spare terminal while your agent works. A
 burst of edits becomes one snapshot, not thirty.
+
+### The browser
+
+`scrubline` with no arguments opens the timeline: snapshots on the left, the
+diff on the right.
+
+| Key | |
+|---|---|
+| `↑` `↓` | move between snapshots |
+| `r` | restore the selected snapshot, after a confirmation |
+| `d` | toggle the diff between *vs now* and *vs previous* |
+| `/` | filter snapshots by filename or label |
+| `q` | quit |
+
+`PgUp` / `PgDn` scroll a long diff. Colours adapt to light and dark terminals
+and disappear entirely under `NO_COLOR`. Narrower than 56 columns the diff pane
+is dropped rather than squeezed.
 
 ### For agent hooks
 
@@ -98,6 +120,37 @@ Restore is the dangerous direction, so:
 - **`--dry-run` shows the exact file-level plan** and touches nothing.
 - **Nothing happens without a git repository.** `scrubline` refuses to run
   outside one rather than guessing what your project is.
+
+## Storage
+
+Snapshots are git objects, so an unchanged file costs nothing no matter how many
+snapshots contain it -- only what actually changed is stored, compressed. A
+deliberately hostile measurement: 30 snapshots over a 40-file repository, each
+one rewriting eight files with 20KB of fresh random text, came to 1.34 MiB. Real
+editing sessions share far more between snapshots than that.
+
+When it does get large:
+
+```sh
+scrubline prune --older-than 7d   # unlink old snapshots, always keeping the newest
+git gc --prune=now                # reclaim the space
+```
+
+`prune` deliberately stops at unlinking. `git gc` prunes every unreferenced
+object in your repository, not only scrubline's, and that is not a decision this
+tool should make for you.
+
+## Notes
+
+- Pruning rebuilds the snapshots it keeps, so their ids change. Trees, labels,
+  and timestamps do not.
+- Don't point `scrubline watch`'s own output at a file inside the repository it
+  is watching: each snapshot writes a log line, which is a change, which
+  triggers the next snapshot.
+- Opening the browser links in a terminal UI library that probes the terminal
+  for its background colour at startup, so every command emits a short escape
+  sequence before it runs. Terminals answer it instantly; it is invisible in
+  normal use.
 
 ## Requirements
 

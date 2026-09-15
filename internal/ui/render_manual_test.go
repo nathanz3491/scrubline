@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -9,8 +10,11 @@ import (
 
 // TestRenderManual prints the view so it can be eyeballed. Run with:
 //
-//	go test ./internal/ui -run TestRenderManual -v
+//	SCRUBLINE_RENDER=1 go test ./internal/ui -run TestRenderManual -v
 func TestRenderManual(t *testing.T) {
+	if os.Getenv("SCRUBLINE_RENDER") == "" {
+		t.Skip("set SCRUBLINE_RENDER=1 to print the view")
+	}
 	m, _ := newModel(t)
 	for _, size := range []struct{ w, h int }{{100, 24}, {60, 15}} {
 		m.Update(tea.WindowSizeMsg{Width: size.w, Height: size.h})

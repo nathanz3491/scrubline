@@ -116,7 +116,12 @@ func (m *Model) Init() tea.Cmd { return nil }
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
+		// Some pseudo-terminals report 0x0 before the first real resize; keeping
+		// the previous size beats rendering the "terminal too small" notice at
+		// what is actually a perfectly usable window.
+		if msg.Width > 0 && msg.Height > 0 {
+			m.width, m.height = msg.Width, msg.Height
+		}
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)

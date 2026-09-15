@@ -50,6 +50,8 @@ func run(args []string) error {
 		return cmdMark(args[1:])
 	case "restore":
 		return cmdRestore(args[1:])
+	case "prune":
+		return cmdPrune(args[1:])
 	case "ui", "browse":
 		return cmdBrowse()
 	case "version", "--version", "-v":
@@ -78,6 +80,7 @@ const usageText = "%[1]s %[2]s -- an undo timeline for agent-edited working tree
 	"  %[1]s list [-n N]           list snapshots, newest first\n" +
 	"  %[1]s show ID [--files]     show what a snapshot changed\n" +
 	"  %[1]s restore ID [flags]    put the working tree back to a snapshot\n" +
+	"  %[1]s prune [--older-than AGE]   drop snapshots older than an age\n" +
 	"  %[1]s version\n" +
 	"\n" +
 	"Snapshots are git commits on %[3]s, so they cost almost nothing\n" +
@@ -131,6 +134,9 @@ func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 
 // cmdBrowse opens the timeline browser.
 func cmdBrowse() error {
+	if !isTTY(os.Stdout) {
+		return fmt.Errorf("the browser needs a terminal; try `%s list` instead", meta.Name)
+	}
 	t, err := open()
 	if err != nil {
 		return err
@@ -339,6 +345,33 @@ func cmdRestore(args []string) error {
 	fmt.Printf("restored %s\n%s\n", snap.ShortID(), timeline.Describe(res.Plan))
 	fmt.Printf("\nthe previous state is snapshot %s -- `%s restore %[1]s` puts it back\n",
 		res.Safety.ShortID(), meta.Name)
+	return nil
+}
+
+func cmdPrune(args []string) error {
+	fs := newFlagSet("prune [--older-than AGE]", "Drop snapshots older than an age, e.g. 7d, 12h, 2w.\n\nThe newest snapshot is always kept. Pruning unlinks old snapshots; the disk\nspace comes back when git next collects garbage.")
+	age := fs.String("older-than", "7d", "drop snapshots older than this")
+	if _, err := parseArgs(fs, args); err != nil {
+		return errParsed(err)
+	}
+	d, err := timeline.ParseAge(*age)
+	if err != nil {
+		return err
+	}
+	t, err := open()
+	if err != nil {
+		return err
+	}
+	res, err := t.Prune(d)
+	if err != nil {
+		return err
+	}
+	if res.Removed == 0 {
+		fmt.Printf("nothing older than %s, %d snapshot%s kept\n", *age, res.Kept, plural(res.Kept))
+		return nil
+	}
+	fmt.Printf("dropped %d snapshot%s older than %s, %d kept\n", res.Removed, plural(res.Removed), *age, res.Kept)
+	fmt.Printf("run `%s` to reclaim the disk space\n", timeline.PruneHint)
 	return nil
 }
 

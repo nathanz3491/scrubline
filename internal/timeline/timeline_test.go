@@ -574,3 +574,106 @@ func TestLookupRefusesABlankID(t *testing.T) {
 		t.Fatalf("Lookup(latest): %v", err)
 	}
 }
+
+func TestParseAge(t *testing.T) {
+	cases := map[string]time.Duration{
+		"7d":  7 * 24 * time.Hour,
+		"2w":  14 * 24 * time.Hour,
+		"12h": 12 * time.Hour,
+		"30m": 30 * time.Minute,
+	}
+	for in, want := range cases {
+		got, err := ParseAge(in)
+		if err != nil || got != want {
+			t.Fatalf("ParseAge(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "soon", "-3d", "0d", "7x", "d"} {
+		if _, err := ParseAge(bad); err == nil {
+			t.Fatalf("ParseAge(%q) accepted a bad age", bad)
+		}
+	}
+}
+
+func TestPruneDropsOldSnapshotsAndKeepsTheNewest(t *testing.T) {
+	r := newTestRepo(t)
+
+	// Three snapshots, backdated so that two are old.
+	r.write("a.txt", "one\n")
+	r.snap("oldest")
+	r.write("a.txt", "two\n")
+	r.snap("middle")
+	r.write("a.txt", "three\n")
+	newest := r.snap("newest")
+
+	// Rewrite the two older commits to be 30 days old by rebuilding the chain
+	// through the same path prune uses.
+	snaps, err := r.tl.List(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	parent := ""
+	for i := len(snaps) - 1; i >= 0; i-- {
+		s := snaps[i]
+		when := s.When
+		if i > 0 {
+			when = old
+		}
+		parent, err = r.tl.Repo.CommitTreeAt(s.Tree, parent, buildMessage(s.Label, s.Branch, s.Files), when)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.tl.Repo.Git("update-ref", "refs/scrubline/timeline", parent); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := r.tl.Prune(7 * 24 * time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Removed != 2 || res.Kept != 1 {
+		t.Fatalf("prune removed %d kept %d, want 2 and 1", res.Removed, res.Kept)
+	}
+	after, err := r.tl.List(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("timeline has %d snapshots after prune, want 1", len(after))
+	}
+	if after[0].Tree != newest.Tree {
+		t.Fatal("prune kept the wrong snapshot")
+	}
+	if after[0].Label != "newest" {
+		t.Fatalf("prune lost the label: %q", after[0].Label)
+	}
+	// The kept snapshot must still restore correctly.
+	r.write("a.txt", "mangled\n")
+	if _, err := r.tl.Restore(after[0], RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if r.read("a.txt") != "three\n" {
+		t.Fatalf("restore after prune gave %q", r.read("a.txt"))
+	}
+}
+
+func TestPruneNeverEmptiesTheTimeline(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("a.txt", "one\n")
+	r.snap("only")
+
+	// Everything is older than a zero-length window, but one must survive.
+	res, err := r.tl.Prune(time.Nanosecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := r.tl.List(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("prune left %d snapshots, want 1 (result %+v)", len(after), res)
+	}
+}

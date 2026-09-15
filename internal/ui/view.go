@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -14,26 +15,59 @@ import (
 
 // Colors are adaptive so the same palette is legible on light and dark
 // terminals. When NO_COLOR is set every style collapses to plain text.
+//
+// These are built on first use rather than at package level on purpose:
+// constructing a lipgloss style creates the default renderer, which asks the
+// terminal for its background colour. Doing that at init made every command --
+// `list`, `snap`, `restore` -- emit a terminal query and wait for an answer,
+// which costs startup time and hangs outright on a terminal that never replies.
+// Only the browser needs colour, so only the browser pays for it.
 var (
-	styleAdded   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#116329", Dark: "#3fb950"})
-	styleRemoved = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#a40e26", Dark: "#f85149"})
-	styleHunk    = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#0550ae", Dark: "#79c0ff"})
-	styleFile    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#24292f", Dark: "#e6edf3"})
-	styleDim     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#6e7781", Dark: "#8b949e"})
-	styleCursor  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#0550ae", Dark: "#79c0ff"})
-	styleLabel   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#8250df", Dark: "#d2a8ff"})
-	styleWarn    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#a40e26", Dark: "#f85149"})
+	stylesOnce   sync.Once
+	styleAdded   lipgloss.Style
+	styleRemoved lipgloss.Style
+	styleHunk    lipgloss.Style
+	styleFile    lipgloss.Style
+	styleDim     lipgloss.Style
+	styleCursor  lipgloss.Style
+	styleLabel   lipgloss.Style
+	styleWarn    lipgloss.Style
 )
+
+func initStyles() {
+	stylesOnce.Do(func() {
+		styleAdded = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#116329", Dark: "#3fb950"})
+		styleRemoved = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#a40e26", Dark: "#f85149"})
+		styleHunk = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#0550ae", Dark: "#79c0ff"})
+		styleFile = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#24292f", Dark: "#e6edf3"})
+		styleDim = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#6e7781", Dark: "#8b949e"})
+		styleCursor = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#0550ae", Dark: "#79c0ff"})
+		styleLabel = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#8250df", Dark: "#d2a8ff"})
+		styleWarn = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#a40e26", Dark: "#f85149"})
+	})
+}
 
 // plainOutput reports whether color must be suppressed entirely.
 func plainOutput() bool { return os.Getenv("NO_COLOR") != "" }
 
-func paint(style lipgloss.Style, s string) string {
+// paint applies one of the lazily built styles. The style is named by a getter
+// rather than passed in, so that NO_COLOR output never constructs one at all.
+func paint(get func() lipgloss.Style, s string) string {
 	if plainOutput() {
 		return s
 	}
-	return style.Render(s)
+	initStyles()
+	return get().Render(s)
 }
+
+func sAdded() lipgloss.Style   { return styleAdded }
+func sRemoved() lipgloss.Style { return styleRemoved }
+func sHunk() lipgloss.Style    { return styleHunk }
+func sFile() lipgloss.Style    { return styleFile }
+func sDim() lipgloss.Style     { return styleDim }
+func sCursor() lipgloss.Style  { return styleCursor }
+func sLabel() lipgloss.Style   { return styleLabel }
+func sWarn() lipgloss.Style    { return styleWarn }
 
 // layout splits the terminal into a snapshot pane and a diff pane. Below a
 // certain width there is no honest way to show both, so the diff pane is
@@ -92,7 +126,7 @@ func (m *Model) View() string {
 				right = diffLines[i]
 			}
 			b.WriteString(padTo(left, listWidth))
-			b.WriteString(paint(styleDim, " │ "))
+			b.WriteString(paint(sDim, " │ "))
 			b.WriteString(right)
 			b.WriteString("\n")
 		}
@@ -112,12 +146,12 @@ func (m *Model) header() string {
 	if gap < 1 {
 		return truncate(title, m.width)
 	}
-	return paint(styleFile, title) + strings.Repeat(" ", gap) + paint(styleDim, right)
+	return paint(sFile, title) + strings.Repeat(" ", gap) + paint(sDim, right)
 }
 
 func (m *Model) listLines(width, height int) []string {
 	if len(m.visible) == 0 {
-		return []string{paint(styleDim, truncate("  no snapshots match", width))}
+		return []string{paint(sDim, truncate("  no snapshots match", width))}
 	}
 
 	// Scroll the list so the cursor stays on screen.
@@ -136,7 +170,7 @@ func (m *Model) listLines(width, height int) []string {
 		row := fmt.Sprintf("%s%s  %s", marker, s.ShortID(), relative(s))
 		row = truncate(row, width)
 		if i == m.cursor {
-			row = paint(styleCursor, row)
+			row = paint(sCursor, row)
 		}
 		lines = append(lines, row)
 
@@ -144,7 +178,7 @@ func (m *Model) listLines(width, height int) []string {
 		// off the row.
 		if s.Label != "" && len(lines) < height {
 			label := truncate("     "+s.Label, width)
-			lines = append(lines, paint(styleLabel, label))
+			lines = append(lines, paint(sLabel, label))
 		}
 	}
 	return lines
@@ -165,17 +199,17 @@ func colorizeDiffLine(line string, width int) string {
 	text := truncate(line, width)
 	switch {
 	case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
-		return paint(styleDim, text)
+		return paint(sDim, text)
 	case strings.HasPrefix(line, "diff "), strings.HasPrefix(line, "index "),
 		strings.HasPrefix(line, "new file"), strings.HasPrefix(line, "deleted file"),
 		strings.HasPrefix(line, "similarity"), strings.HasPrefix(line, "rename "):
-		return paint(styleFile, text)
+		return paint(sFile, text)
 	case strings.HasPrefix(line, "@@"):
-		return paint(styleHunk, text)
+		return paint(sHunk, text)
 	case strings.HasPrefix(line, "+"):
-		return paint(styleAdded, text)
+		return paint(sAdded, text)
 	case strings.HasPrefix(line, "-"):
-		return paint(styleRemoved, text)
+		return paint(sRemoved, text)
 	default:
 		return text
 	}
@@ -186,15 +220,15 @@ func (m *Model) footer() string {
 	switch {
 	case m.confirming:
 		snap, _ := m.Selected()
-		status = paint(styleWarn, fmt.Sprintf("restore %s over the working tree?  y / n", snap.ShortID()))
+		status = paint(sWarn, fmt.Sprintf("restore %s over the working tree?  y / n", snap.ShortID()))
 	case m.filtering:
 		status = fmt.Sprintf("filter: %s_", m.filter)
 	case m.status != "":
-		status = paint(styleDim, m.status)
+		status = paint(sDim, m.status)
 	default:
 		snap, ok := m.Selected()
 		if ok {
-			status = paint(styleDim, fmt.Sprintf("%s  %s  %d file%s changed",
+			status = paint(sDim, fmt.Sprintf("%s  %s  %d file%s changed",
 				snap.ShortID(), snap.Branch, snap.Files, plural(snap.Files)))
 		}
 	}
@@ -209,7 +243,7 @@ func (m *Model) footer() string {
 	if m.confirming {
 		help = "y restore   any other key cancel"
 	}
-	return truncate(status, m.width) + "\n" + paint(styleDim, truncate(help, m.width))
+	return truncate(status, m.width) + "\n" + paint(sDim, truncate(help, m.width))
 }
 
 func (m *Model) otherMode() string {

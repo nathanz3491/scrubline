@@ -337,3 +337,12 @@ func TestViewSurvivesAnEmptyFilterResult(t *testing.T) {
 		t.Fatal("r asked to restore with no selection")
 	}
 }
+
+func TestZeroSizedWindowMessageIsIgnored(t *testing.T) {
+	m, _ := newModel(t)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.Update(tea.WindowSizeMsg{Width: 0, Height: 0})
+	if m.width != 100 || m.height != 30 {
+		t.Fatalf("a 0x0 resize clobbered the size: %dx%d", m.width, m.height)
+	}
+}

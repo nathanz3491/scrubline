@@ -1,0 +1,6 @@
+#!/bin/sh
+echo "=== ffmpeg called with: $@" >> /Users/nz/multica_workspaces/pluto-mu0f-d1dcd7dd8a32/pluto-4-460fee10e9dd/workdir/scrubline/.shim/ffmpeg.log
+/opt/homebrew/bin/ffmpeg "$@" >> /Users/nz/multica_workspaces/pluto-mu0f-d1dcd7dd8a32/pluto-4-460fee10e9dd/workdir/scrubline/.shim/ffmpeg.log 2>&1
+code=$?
+echo "=== exit $code" >> /Users/nz/multica_workspaces/pluto-mu0f-d1dcd7dd8a32/pluto-4-460fee10e9dd/workdir/scrubline/.shim/ffmpeg.log
+exit $code
