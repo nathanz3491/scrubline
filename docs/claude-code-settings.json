@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 10,
+            "command": "command -v scrubline >/dev/null 2>&1 || exit 0; p=$(jq -r \".prompt // empty\" 2>/dev/null | tr \"\\n\" \" \" | cut -c1-60); scrubline mark \"before: ${p:-a new turn}\" >/dev/null 2>&1; exit 0"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 10,
+            "command": "command -v scrubline >/dev/null 2>&1 && scrubline snap >/dev/null 2>&1; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}

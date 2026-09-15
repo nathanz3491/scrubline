@@ -95,12 +95,29 @@ is dropped rather than squeezed.
 ### For agent hooks
 
 `scrubline mark "<label>"` labels a snapshot, so a timeline reads as *turns*
-rather than as saves. It is deliberately agent-agnostic: anything that can run a
-command at a turn boundary can call it.
+rather than as saves:
+
+```
+$ scrubline list
+01b16191cf  1m ago    main   3 files  before: extract the tokenizer into its own module
+7c02a11e3f  6m ago    main   1 file   before: make the parser handle empty input
+b8d51d4373  9m ago    main   2 files  before: add the lexer
+```
+
+Now "the agent was right three turns ago" is something you can point at, and
+restoring `7c02a11e3f` puts the tree back to just before the change that went
+wrong.
+
+`scrubline` is deliberately agent-agnostic — anything that can run a command at
+a turn boundary can call it:
 
 ```sh
-scrubline mark "turn $N: $USER_PROMPT"
+scrubline mark "before: $USER_PROMPT"
 ```
+
+For **Claude Code** there is a drop-in pair of hooks that does this for you, in
+[docs/claude-code.md](docs/claude-code.md). Copy it into `.claude/settings.json`
+and your timeline reads as turns with no further setup.
 
 ## How it works
 
