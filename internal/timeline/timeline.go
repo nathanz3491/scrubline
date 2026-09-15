@@ -27,7 +27,7 @@ import (
 type Timeline struct {
 	Repo *gitx.Repo
 
-	stateDir string
+	stateDir  string
 	indexPath string
 }
 
