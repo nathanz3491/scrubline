@@ -2,9 +2,12 @@ package timeline
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -675,5 +678,319 @@ func TestPruneNeverEmptiesTheTimeline(t *testing.T) {
 	}
 	if len(after) != 1 {
 		t.Fatalf("prune left %d snapshots, want 1 (result %+v)", len(after), res)
+	}
+}
+
+// --- the symmetric ignore rule -------------------------------------------
+
+func TestRestoreLeavesAPathIgnoredAfterItWasSnapshottedAlone(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("app.py", "print(1)\n")
+	r.git("add", "-A")
+	r.git("-c", "user.email=t@t", "-c", "user.name=T", "commit", "-qm", "init")
+	good := r.snap("T0")
+
+	// A secret arrives, gets snapshotted, and is only then ignored -- via
+	// .git/info/exclude, which is how personal ignores are usually carried.
+	r.write(".env.local", "OPENAI_KEY=sk-real-key\n")
+	r.snap("")
+	appendFile(t, filepath.Join(r.dir, ".git", "info", "exclude"), ".env.local\n")
+	r.write("app.py", "GARBAGE\n")
+
+	res, err := r.tl.Restore(good, RestoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.exists(".env.local") {
+		t.Fatal("restore deleted a file git ignores now")
+	}
+	if got := r.read(".env.local"); got != "OPENAI_KEY=sk-real-key\n" {
+		t.Fatalf(".env.local was modified: %q", got)
+	}
+	for _, c := range res.Plan {
+		if c.Path == ".env.local" && c.Op == OpDelete {
+			t.Fatal("the plan still contained a delete for an ignored path")
+		}
+	}
+	if r.read("app.py") != "print(1)\n" {
+		t.Fatal("the non-ignored file was not restored")
+	}
+}
+
+func TestSnapshotStopsRecordingAPathOnceItIsIgnored(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("keep.txt", "keep\n")
+	r.write(".env", "SECRET=1\n")
+	first := r.snap("")
+
+	files, err := r.tl.Files(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(files, ".env") {
+		t.Fatal("precondition failed: .env should be in the first snapshot")
+	}
+
+	// Ignore it after the fact. Every later snapshot must drop it.
+	r.write(".gitignore", ".env\n")
+	r.write("keep.txt", "changed\n")
+	later := r.snap("")
+
+	out, err := r.tl.Repo.GitRaw("ls-tree", "-r", "--name-only", "-z", later.Tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range splitNUL(out) {
+		if p == ".env" {
+			t.Fatal("a newly ignored path is still being recorded into snapshots")
+		}
+	}
+	if !r.exists(".env") {
+		t.Fatal("snapshotting deleted the ignored file from disk")
+	}
+}
+
+// --- pre-flight -----------------------------------------------------------
+
+func TestRestoreRefusesAFileDirectoryCollisionAndWritesNothing(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("src/aaa.txt", "aaa\n")
+	r.write("src/zzz.txt", "zzz\n")
+	good := r.snap("good")
+
+	r.write("src/aaa.txt", "WRECKED\n")
+	r.remove("src/zzz.txt")
+	if err := os.MkdirAll(filepath.Join(r.dir, "src", "zzz.txt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r.write("src/zzz.txt/x", "junk\n")
+
+	before, err := r.tl.List(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := r.tl.Restore(good, RestoreOptions{})
+	var pf *PreflightError
+	if !errors.As(err, &pf) {
+		t.Fatalf("expected a pre-flight refusal, got %v", err)
+	}
+	if res.Partial {
+		t.Fatal("a pre-flight refusal must not report a partial write")
+	}
+	// Nothing written: the other file in the plan is untouched.
+	if got := r.read("src/aaa.txt"); got != "WRECKED\n" {
+		t.Fatalf("src/aaa.txt was written despite the refusal: %q", got)
+	}
+	if got := r.read("src/zzz.txt/x"); got != "junk\n" {
+		t.Fatal("the colliding directory was disturbed")
+	}
+	// And no safety snapshot, so retrying cannot pile them up.
+	after, err := r.tl.List(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("a refused restore minted %d snapshot(s)", len(after)-len(before))
+	}
+	if _, err := r.tl.Restore(good, RestoreOptions{}); !errors.As(err, &pf) {
+		t.Fatal("the retry did not refuse the same way")
+	}
+	again, _ := r.tl.List(0)
+	if len(again) != len(before) {
+		t.Fatalf("retrying minted %d snapshot(s)", len(again)-len(before))
+	}
+}
+
+// The trap: a directory standing where a file belongs may hold ignored files,
+// so it must never be cleared recursively to make room.
+func TestCollidingDirectoryHoldingIgnoredFilesIsNeverCleared(t *testing.T) {
+	r := newTestRepo(t)
+	r.write(".gitignore", "*.log\n")
+	r.write("build", "a file called build\n")
+	good := r.snap("good")
+
+	// "build" becomes a directory holding only ignored files.
+	r.remove("build")
+	if err := os.MkdirAll(filepath.Join(r.dir, "build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r.write("build/output.log", "precious ignored output\n")
+
+	_, err := r.tl.Restore(good, RestoreOptions{})
+	if err == nil {
+		t.Fatal("expected a refusal rather than clearing the directory")
+	}
+	if !r.exists("build/output.log") {
+		t.Fatal("an ignored file inside a colliding directory was deleted")
+	}
+	if got := r.read("build/output.log"); got != "precious ignored output\n" {
+		t.Fatalf("the ignored file was modified: %q", got)
+	}
+}
+
+func TestPreflightRefusesAReadOnlyFile(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("locked.txt", "original\n")
+	good := r.snap("")
+	r.write("locked.txt", "changed\n")
+	if err := os.Chmod(filepath.Join(r.dir, "locked.txt"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(filepath.Join(r.dir, "locked.txt"), 0o644) })
+
+	_, err := r.tl.Restore(good, RestoreOptions{})
+	var pf *PreflightError
+	if !errors.As(err, &pf) {
+		t.Fatalf("expected a pre-flight refusal for a read-only file, got %v", err)
+	}
+	if r.read("locked.txt") != "changed\n" {
+		t.Fatal("the read-only file was written anyway")
+	}
+}
+
+// --- --path that matches nothing -----------------------------------------
+
+func TestUnmatchedPathSelectorIsAnError(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("src/App.tsx", "good\n")
+	good := r.snap("")
+	r.write("src/App.tsx", "WRECKED\n")
+
+	for _, dry := range []bool{false, true} {
+		_, err := r.tl.Restore(good, RestoreOptions{Path: "src/app.tsx", DryRun: dry})
+		if !errors.Is(err, ErrPathNotFound) {
+			t.Fatalf("dryRun=%v: expected ErrPathNotFound, got %v", dry, err)
+		}
+	}
+	if r.read("src/App.tsx") != "WRECKED\n" {
+		t.Fatal("the tree changed despite the error")
+	}
+
+	// A selector that does match is unaffected.
+	if _, err := r.tl.Restore(good, RestoreOptions{Path: "src/App.tsx"}); err != nil {
+		t.Fatalf("matching selector failed: %v", err)
+	}
+	if r.read("src/App.tsx") != "good\n" {
+		t.Fatal("the matching selector did not restore")
+	}
+}
+
+func TestPathSelectorThatMatchesButIsUpToDateIsNotAnError(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("a.txt", "one\n")
+	r.write("b.txt", "one\n")
+	good := r.snap("")
+	r.write("b.txt", "two\n") // only b differs
+
+	res, err := r.tl.Restore(good, RestoreOptions{Path: "a.txt"})
+	if err != nil {
+		t.Fatalf("an up-to-date path should not be an error: %v", err)
+	}
+	if len(res.Plan) != 0 {
+		t.Fatalf("expected an empty plan, got %v", res.Plan)
+	}
+}
+
+// --- large restores -------------------------------------------------------
+
+func TestRestoreHandlesManyFilesWithoutPathspecArguments(t *testing.T) {
+	r := newTestRepo(t)
+	const n = 400 // over the pathspec threshold, so the whole tree is listed
+	for i := 0; i < n; i++ {
+		r.write(fmt.Sprintf("pkg/f%03d.txt", i), fmt.Sprintf("original %d\n", i))
+	}
+	good := r.snap("")
+	for i := 0; i < n; i++ {
+		r.write(fmt.Sprintf("pkg/f%03d.txt", i), "WRECKED\n")
+	}
+
+	res, err := r.tl.Restore(good, RestoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Plan) != n {
+		t.Fatalf("plan covered %d files, want %d", len(res.Plan), n)
+	}
+	for i := 0; i < n; i++ {
+		p := fmt.Sprintf("pkg/f%03d.txt", i)
+		if got, want := r.read(p), fmt.Sprintf("original %d\n", i); got != want {
+			t.Fatalf("%s = %q, want %q", p, got, want)
+		}
+	}
+}
+
+func appendFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, h := range haystack {
+		if h == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPartialRestoreReportsTheSafetySnapshot covers the failure that pre-flight
+// cannot predict: a file whose permission bits say writable but which the
+// filesystem refuses to touch. macOS's immutable flag gives that deterministically.
+func TestPartialRestoreReportsTheSafetySnapshot(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("needs chflags to make a write fail without tripping pre-flight")
+	}
+	r := newTestRepo(t)
+	r.write("aaa.txt", "original\n")
+	r.write("zzz.txt", "original\n")
+	good := r.snap("good")
+
+	r.write("aaa.txt", "WRECKED\n")
+	r.write("zzz.txt", "WRECKED\n")
+	wrecked := r.state()
+
+	locked := filepath.Join(r.dir, "zzz.txt")
+	if out, err := exec.Command("chflags", "uchg", locked).CombinedOutput(); err != nil {
+		t.Skipf("chflags unavailable: %v %s", err, out)
+	}
+	unlock := func() { exec.Command("chflags", "nouchg", locked).Run() }
+	t.Cleanup(unlock)
+
+	res, err := r.tl.Restore(good, RestoreOptions{})
+	if err == nil {
+		t.Fatal("expected the restore to fail on the immutable file")
+	}
+	if !res.Partial {
+		t.Fatal("a failure after writing began must be reported as partial")
+	}
+	if res.Safety.ID == "" {
+		t.Fatal("a partial restore must report the safety snapshot to recover from")
+	}
+	// The plan is path-sorted, so the first file was written and the second was not.
+	if r.read("aaa.txt") != "original\n" {
+		t.Fatal("precondition: expected the first file to have been restored")
+	}
+	if r.read("zzz.txt") != "WRECKED\n" {
+		t.Fatal("precondition: expected the immutable file to be untouched")
+	}
+
+	// The reported safety snapshot really does get the user back.
+	unlock()
+	if _, err := r.tl.Restore(res.Safety, RestoreOptions{}); err != nil {
+		t.Fatalf("restoring the reported safety snapshot failed: %v", err)
+	}
+	if got := r.state(); !sameState(got, wrecked) {
+		t.Fatal("the safety snapshot did not restore the pre-restore state")
 	}
 }

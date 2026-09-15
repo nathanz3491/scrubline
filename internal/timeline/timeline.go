@@ -5,9 +5,19 @@
 // index file, so the user's index, HEAD, and branches are never touched.
 //
 // The one invariant everything else depends on: a snapshot tree contains exactly
-// the non-ignored files in the working tree. The private index is never seeded
-// from HEAD, so a path ignored by git can never enter a snapshot -- which in turn
-// means restore can never delete or overwrite one.
+// the files git does not currently ignore. Two things enforce it, because one is
+// not enough. The private index is never seeded from HEAD, so a path ignored
+// before its first snapshot never enters one. And every staging evicts paths
+// that git ignores now, because `git add` only applies ignore rules to paths not
+// already in the index -- without that step a file recorded once before being
+// ignored would stay in every later snapshot forever.
+//
+// Ignore state is therefore always read fresh, never remembered, and applied in
+// both directions: what git ignores now is neither recorded, written, nor
+// deleted. The cost is that a snapshot does not necessarily reproduce a
+// directory byte-for-byte if the ignore rules changed in between; the benefit is
+// that restore can never resurrect or destroy a file the user has just decided
+// git should not see.
 package timeline
 
 import (
@@ -70,7 +80,35 @@ func (t *Timeline) StageTree() (string, error) {
 	if _, err := t.Repo.GitWithIndex(t.indexPath, "add", "-A", "--", "."); err != nil {
 		return "", err
 	}
+	if err := t.evictIgnored(); err != nil {
+		return "", err
+	}
 	return t.Repo.GitWithIndex(t.indexPath, "write-tree")
+}
+
+// evictIgnored drops currently-ignored paths from the private index.
+//
+// `git add` only applies ignore rules to paths that are not already in the
+// index, and this index is persisted as a stat cache. Without this step a file
+// that was recorded once before the user ignored it stays in every later
+// snapshot for the life of the repository -- so a .env added to .gitignore
+// after its first snapshot would keep being copied into git objects, and a
+// restore would still consider itself entitled to delete it.
+//
+// Ignore state is read fresh every time, which is what makes the rule
+// symmetric: what git ignores right now is what scrubline leaves alone, in
+// both directions.
+func (t *Timeline) evictIgnored() error {
+	out, err := t.Repo.GitWithIndexRaw(t.indexPath, "ls-files", "-z", "--cached", "--ignored", "--exclude-standard")
+	if err != nil {
+		return err
+	}
+	ignored := splitNUL(out)
+	if len(ignored) == 0 {
+		return nil
+	}
+	return t.Repo.GitWithIndexStdin(t.indexPath, strings.Join(ignored, "\x00")+"\x00",
+		"update-index", "--force-remove", "-z", "--stdin")
 }
 
 // Tip returns the most recent snapshot, or ok=false when the timeline is empty.
@@ -96,7 +134,11 @@ func (t *Timeline) Snap(label string) (snap Snapshot, created bool, err error) {
 		return Snapshot{}, false, err
 	}
 	defer unlock()
+	return t.snapLocked(label)
+}
 
+// snapLocked is Snap without taking the lock, for callers that already hold it.
+func (t *Timeline) snapLocked(label string) (snap Snapshot, created bool, err error) {
 	tree, err := t.StageTree()
 	if err != nil {
 		return Snapshot{}, false, err

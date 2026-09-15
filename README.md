@@ -115,15 +115,47 @@ staged through a private index file. That means:
 Restore is the dangerous direction, so:
 
 - **Every restore snapshots the current tree first.** The id is printed, and
-  restoring it undoes the restore. There is no way to reach a state you cannot
-  get back from.
-- **Files git ignores are never recorded**, which means they can never be
-  restored or deleted either. Your `node_modules/`, your `.env`, your build
-  output, and your local database are not part of this. A path that became
-  ignored after it was snapshotted is skipped and reported, never overwritten.
+  restoring it puts back every file scrubline manages. If a restore cannot be
+  applied cleanly it is refused before anything is written, and on the rare
+  failure that only shows up mid-write, the id you need is printed along with a
+  plain statement that the tree is partly rewritten.
+- **What git ignores right now, scrubline does not touch** -- it is not
+  recorded, not written, and not deleted. Your `node_modules/`, your `.env`,
+  your build output, and your local database are not part of this. The rule is
+  read fresh every time and applied in both directions, so ignoring a file is
+  enough to keep it out of scrubline's way from that moment on, including files
+  that were snapshotted before you ignored them.
+- **A plan that cannot be applied is refused whole.** A file that is now a
+  directory, a read-only file, an unwritable directory: all of them stop the
+  restore before the first write, list every problem at once, and leave the
+  timeline clean -- no half-rewritten tree, and no safety snapshot minted for an
+  attempt that did not happen.
 - **`--dry-run` shows the exact file-level plan** and touches nothing.
+- **A `--path` that matches nothing is an error**, not a quiet success.
 - **Nothing happens without a git repository.** `scrubline` refuses to run
   outside one rather than guessing what your project is.
+
+## Known limits
+
+These are real and worth knowing before you rely on restore:
+
+- **Git LFS and custom clean filters.** Snapshots stage through `git add`, which
+  runs your `.gitattributes` clean filter, and restore writes the stored blob
+  back without the matching smudge filter. For LFS-managed paths that means a
+  restore can replace a file with its pointer, and the safety snapshot holds the
+  same pointer. `git lfs checkout` recovers the real content. If you use LFS or
+  a custom clean filter, do not restore over those paths.
+- **Windows line endings.** With `core.autocrlf=true` -- the Git for Windows
+  default -- a CRLF file is stored as LF and restored as LF, so `git status`
+  will show restored files as modified. Restore is byte-identical on macOS and
+  Linux; on Windows it is line-ending-normalised.
+- **Ignore rules are current, not historical.** Because the ignore decision is
+  always "what does git ignore right now", a snapshot is not guaranteed to
+  reproduce your directory exactly if your ignore rules changed in between. The
+  contract is that restore puts back the files scrubline manages -- not that it
+  recreates your directory. The alternative would mean writing a secret back
+  over a file you had just decided to ignore, which is worse.
+- **Submodules are left alone.** A submodule pointer is never restored.
 
 ## Storage
 

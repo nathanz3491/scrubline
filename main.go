@@ -331,14 +331,32 @@ func cmdRestore(args []string) error {
 	}
 	res, err := t.Restore(snap, timeline.RestoreOptions{DryRun: *dryRun, Path: *path})
 	if err != nil {
+		// A restore that failed after it started writing is the one case where
+		// the user needs more than the error: which state they are in, and the
+		// id that gets them out of it.
+		if res.Partial {
+			return fmt.Errorf("%w\n\nthe working tree is now partly rewritten -- some files are from %s and some are not.\n"+
+				"the state from before this restore is snapshot %s: `%s restore %[3]s` puts it back",
+				err, snap.ShortID(), res.Safety.ShortID(), meta.Name)
+		}
 		return err
 	}
 
+	actionable := timeline.CountActionable(res.Plan)
 	if *dryRun {
+		if actionable == 0 && len(res.Plan) == 0 {
+			fmt.Printf("dry run, restoring %s would change nothing\n", snap.ShortID())
+			return nil
+		}
 		fmt.Printf("dry run, restoring %s would:\n%s\n", snap.ShortID(), timeline.Describe(res.Plan))
 		return nil
 	}
-	if len(res.Plan) == 0 {
+	if actionable == 0 {
+		if len(res.Plan) > 0 {
+			fmt.Printf("nothing to do for %s -- git ignores every path that differs:\n%s\n",
+				snap.ShortID(), timeline.Describe(res.Plan))
+			return nil
+		}
 		fmt.Printf("the working tree already matches %s, nothing to do\n", snap.ShortID())
 		return nil
 	}

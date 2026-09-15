@@ -4,11 +4,14 @@
 package gitx
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -44,6 +47,109 @@ func (r *Repo) Git(args ...string) (string, error) {
 // user's real index untouched. This is how snapshots are staged.
 func (r *Repo) GitWithIndex(indexPath string, args ...string) (string, error) {
 	return run(r.Root, []string{"GIT_INDEX_FILE=" + indexPath}, args...)
+}
+
+// GitWithIndexRaw is GitWithIndex without trimming, for NUL-separated output.
+func (r *Repo) GitWithIndexRaw(indexPath string, args ...string) (string, error) {
+	return runRaw(r.Root, []string{"GIT_INDEX_FILE=" + indexPath}, args...)
+}
+
+// GitWithIndexStdin feeds input to a git command run against an alternate index.
+// Paths go in on stdin rather than argv so that a repository with tens of
+// thousands of ignored files cannot overflow the argument list.
+func (r *Repo) GitWithIndexStdin(indexPath, input string, args ...string) error {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = r.Root
+	cmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
+	cmd.Stdin = strings.NewReader(input)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// CatFileBatch reads many blobs through a single git process.
+//
+// The obvious implementation forks one `git cat-file` per file, which costs
+// several milliseconds each: restoring a few thousand files that way takes
+// tens of seconds, which behind a keypress in the browser reads as a hang.
+func (r *Repo) CatFileBatch(oids []string) (map[string][]byte, error) {
+	out := make(map[string][]byte, len(oids))
+	if len(oids) == 0 {
+		return out, nil
+	}
+
+	cmd := exec.Command("git", "cat-file", "--batch")
+	cmd.Dir = r.Root
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	writeErr := make(chan error, 1)
+	go func() {
+		w := bufio.NewWriter(stdin)
+		for _, oid := range oids {
+			if _, err := w.WriteString(oid + "\n"); err != nil {
+				stdin.Close()
+				writeErr <- err
+				return
+			}
+		}
+		err := w.Flush()
+		stdin.Close()
+		writeErr <- err
+	}()
+
+	reader := bufio.NewReader(stdout)
+	for range oids {
+		header, err := reader.ReadString('\n')
+		if err != nil {
+			cmd.Wait()
+			return nil, fmt.Errorf("git cat-file --batch: %w (%s)", err, strings.TrimSpace(stderr.String()))
+		}
+		fields := strings.Fields(strings.TrimSpace(header))
+		if len(fields) < 3 {
+			cmd.Wait()
+			return nil, fmt.Errorf("git cat-file --batch: unexpected response %q", strings.TrimSpace(header))
+		}
+		size, err := strconv.Atoi(fields[2])
+		if err != nil {
+			cmd.Wait()
+			return nil, fmt.Errorf("git cat-file --batch: bad size %q", fields[2])
+		}
+		buf := make([]byte, size)
+		if _, err := io.ReadFull(reader, buf); err != nil {
+			cmd.Wait()
+			return nil, fmt.Errorf("git cat-file --batch: reading %s: %w", fields[0], err)
+		}
+		// Each record is followed by a newline that is not part of the content.
+		if _, err := reader.Discard(1); err != nil {
+			cmd.Wait()
+			return nil, err
+		}
+		out[fields[0]] = buf
+	}
+
+	if err := <-writeErr; err != nil {
+		cmd.Wait()
+		return nil, err
+	}
+	if err := cmd.Wait(); err != nil {
+		return nil, fmt.Errorf("git cat-file --batch: %s", strings.TrimSpace(stderr.String()))
+	}
+	return out, nil
 }
 
 // GitRaw runs a git command and returns stdout without trimming, for output
