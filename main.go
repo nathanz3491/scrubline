@@ -285,11 +285,16 @@ func cmdRestore(args []string) error {
 	if err != nil {
 		return errParsed(err)
 	}
+	// Unlike show, restore never guesses: rewriting the working tree is not
+	// something to do because an argument was forgotten.
+	if len(rest) == 0 {
+		return fmt.Errorf("restore needs a snapshot id (`%s list` shows them, `latest` names the newest)", meta.Name)
+	}
 	t, err := open()
 	if err != nil {
 		return err
 	}
-	snap, err := t.Lookup(first(rest))
+	snap, err := t.Lookup(rest[0])
 	if err != nil {
 		return err
 	}
