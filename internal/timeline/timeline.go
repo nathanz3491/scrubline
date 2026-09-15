@@ -200,8 +200,14 @@ func (t *Timeline) Lookup(rev string) (Snapshot, error) {
 	if len(snaps) == 0 {
 		return Snapshot{}, fmt.Errorf("%w: the timeline is empty, run `%s snap` first", ErrNoSnapshot, meta.Name)
 	}
+	// An empty id is refused rather than treated as "latest": the realistic
+	// source of one is an unset variable in a script or hook, and resolving it
+	// to a snapshot would let `restore "$SNAP"` rewrite the tree by accident.
+	if strings.TrimSpace(rev) == "" {
+		return Snapshot{}, fmt.Errorf("%w: empty snapshot id", ErrNoSnapshot)
+	}
 	switch rev {
-	case "latest", "last", "":
+	case "latest", "last":
 		return snaps[0], nil
 	}
 

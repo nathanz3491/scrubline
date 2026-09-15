@@ -556,3 +556,21 @@ func TestOpenRejectsANonRepository(t *testing.T) {
 		t.Fatal("Open accepted a directory that is not a git repository")
 	}
 }
+
+func TestLookupRefusesABlankID(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("a.txt", "one\n")
+	r.snap("")
+
+	// The realistic source of a blank id is an unset variable in a script, so
+	// it must not resolve to the newest snapshot.
+	for _, blank := range []string{"", " ", "\t", "\n"} {
+		if _, err := r.tl.Lookup(blank); err == nil {
+			t.Fatalf("Lookup(%q) resolved instead of refusing", blank)
+		}
+	}
+	// "latest" still works, so the convenience is not lost.
+	if _, err := r.tl.Lookup("latest"); err != nil {
+		t.Fatalf("Lookup(latest): %v", err)
+	}
+}

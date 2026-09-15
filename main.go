@@ -176,7 +176,11 @@ func cmdShow(args []string) error {
 	if err != nil {
 		return err
 	}
-	snap, err := t.Lookup(first(rest))
+	id := first(rest)
+	if strings.TrimSpace(id) == "" {
+		id = "latest"
+	}
+	snap, err := t.Lookup(id)
 	if err != nil {
 		return err
 	}
@@ -286,8 +290,10 @@ func cmdRestore(args []string) error {
 		return errParsed(err)
 	}
 	// Unlike show, restore never guesses: rewriting the working tree is not
-	// something to do because an argument was forgotten.
-	if len(rest) == 0 {
+	// something to do because an argument was forgotten. A blank argument counts
+	// as forgotten -- `restore "$SNAP"` with an unset SNAP must not resolve to
+	// the newest snapshot.
+	if len(rest) == 0 || strings.TrimSpace(rest[0]) == "" {
 		return fmt.Errorf("restore needs a snapshot id (`%s list` shows them, `latest` names the newest)", meta.Name)
 	}
 	t, err := open()
