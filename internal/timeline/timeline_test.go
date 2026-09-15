@@ -1205,3 +1205,44 @@ func planString(plan []Change) string {
 	}
 	return strings.Join(parts, "; ")
 }
+
+// TestListAndPlanAgreeAcrossARename pins the two views of a change to each
+// other. `list` and `show --files` count through diffNames; a restore plans
+// through plan(). Both disable rename detection, because with it on a rename
+// collapses to the single new path and the two disagree: one file reported,
+// two paths restored.
+func TestListAndPlanAgreeAcrossARename(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("helpers.js", "helpers v1\n")
+	r.write("keep.txt", "keep\n")
+	good := r.snap("good")
+
+	r.remove("helpers.js")
+	r.write("lib/helpers.js", "helpers v1\n")
+	latest := r.snap("after the rename")
+
+	// What `show --files` lists.
+	files, err := r.tl.Files(latest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(files)
+	if want := []string{"helpers.js", "lib/helpers.js"}; strings.Join(files, ",") != strings.Join(want, ",") {
+		t.Fatalf("show --files = %v, want %v", files, want)
+	}
+
+	// What `list` prints as the file count, recorded at snapshot time.
+	if latest.Files != len(files) {
+		t.Fatalf("list reports %d file(s), show --files lists %d", latest.Files, len(files))
+	}
+
+	// What a restore of the same change would actually do.
+	res, err := r.tl.Restore(good, RestoreOptions{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Plan) != latest.Files {
+		t.Fatalf("the plan touches %d paths (%s) but list reports %d file(s)",
+			len(res.Plan), planString(res.Plan), latest.Files)
+	}
+}

@@ -327,7 +327,11 @@ func (t *Timeline) diffNames(from, to string) ([]string, error) {
 	if from == to {
 		return nil, nil
 	}
-	out, err := t.Repo.GitRaw("diff", "--name-only", "-z", from, to)
+	// Rename detection off, for the same reason restore's plan parser turns it
+	// off: with it on, a rename collapses to the single new path, so `list` and
+	// `show --files` would report one file where restoring the same change
+	// touches two. What these count has to agree with what a restore does.
+	out, err := t.Repo.GitRaw("-c", "diff.renames=false", "diff", "--name-only", "-z", from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -426,5 +430,9 @@ func (t *Timeline) DiffText(fromTree, toTree string) (string, error) {
 	if fromTree == toTree {
 		return "", nil
 	}
+	// Rename detection stays on here, unlike the two places whose output is
+	// parsed or counted: this is a human-readable patch for the browser's diff
+	// pane, nothing reads it by position, and a rename shown as a rename is
+	// easier to read than a delete beside an add.
 	return t.Repo.GitRaw("diff", "--no-color", "--find-renames", fromTree, toTree)
 }
