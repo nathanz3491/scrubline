@@ -363,3 +363,26 @@ func splitNUL(s string) []string {
 	}
 	return out
 }
+
+// CurrentTree records the working tree and returns its tree id, without
+// creating a snapshot. It is what the timeline is diffed against.
+func (t *Timeline) CurrentTree() (string, error) {
+	return t.StageTree()
+}
+
+// ParentTree is the tree a snapshot is measured against: the tree of the
+// snapshot before it, or the baseline when it is the first.
+func (t *Timeline) ParentTree(s Snapshot) (string, error) {
+	if s.Parent != "" {
+		return t.Repo.Git("rev-parse", s.Parent+"^{tree}")
+	}
+	return t.baseline(Snapshot{}, false)
+}
+
+// DiffText returns a unified diff between two trees.
+func (t *Timeline) DiffText(fromTree, toTree string) (string, error) {
+	if fromTree == toTree {
+		return "", nil
+	}
+	return t.Repo.GitRaw("diff", "--no-color", "--find-renames", fromTree, toTree)
+}

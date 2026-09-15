@@ -16,6 +16,7 @@ import (
 	"github.com/nathanz3491/scrubline/internal/gitx"
 	"github.com/nathanz3491/scrubline/internal/meta"
 	"github.com/nathanz3491/scrubline/internal/timeline"
+	"github.com/nathanz3491/scrubline/internal/ui"
 )
 
 func main() {
@@ -27,6 +28,12 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
+		// The browser is the default, but only where there is a terminal to
+		// draw it on; piped or redirected, the help text is more useful than a
+		// program that refuses to start.
+		if isTTY(os.Stdout) {
+			return cmdBrowse()
+		}
 		usage(os.Stdout)
 		return nil
 	}
@@ -43,6 +50,8 @@ func run(args []string) error {
 		return cmdMark(args[1:])
 	case "restore":
 		return cmdRestore(args[1:])
+	case "ui", "browse":
+		return cmdBrowse()
 	case "version", "--version", "-v":
 		fmt.Printf("%s %s\n", meta.Name, meta.Version)
 		return nil
@@ -62,6 +71,7 @@ func usage(w *os.File) {
 const usageText = "%[1]s %[2]s -- an undo timeline for agent-edited working trees.\n" +
 	"\n" +
 	"Usage:\n" +
+	"  %[1]s                       browse the timeline (arrow keys, r to restore)\n" +
 	"  %[1]s watch                 record snapshots continuously while you work\n" +
 	"  %[1]s snap [-m LABEL]       take one snapshot now\n" +
 	"  %[1]s mark LABEL            label the next snapshot (for agent hooks)\n" +
@@ -117,6 +127,15 @@ func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 		positional = append(positional, rest[0])
 		args = rest[1:]
 	}
+}
+
+// cmdBrowse opens the timeline browser.
+func cmdBrowse() error {
+	t, err := open()
+	if err != nil {
+		return err
+	}
+	return ui.Run(t)
 }
 
 func cmdSnap(args []string) error {
