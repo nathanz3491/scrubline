@@ -11,6 +11,10 @@ time you stop typing, and lets you wind back to any point and play from there.
 
 ![scrubline restoring a working tree](docs/demo.gif)
 
+<sub>Every frame above is a view the tool itself rendered, against a real
+repository; only the pacing between frames is chosen by the recorder. Reproduce
+it with `SCRUBLINE_RECORD=1 go test ./internal/ui -run TestRecordDemo`.</sub>
+
 ```
 $ scrubline watch
 recording /home/you/project -- press Ctrl-C to stop
@@ -155,6 +159,14 @@ These are real and worth knowing before you rely on restore:
   contract is that restore puts back the files scrubline manages -- not that it
   recreates your directory. The alternative would mean writing a secret back
   over a file you had just decided to ignore, which is worse.
+- **Restoring past the creation of your `.gitignore` un-ignores what it
+  covered.** `.gitignore` is an ordinary tracked file, so restoring to a
+  snapshot from before it existed deletes it -- correctly -- and from that
+  moment git no longer ignores the paths it listed. A `watch` left running will
+  start recording them, with no prompt and no user action. This is the rule
+  above behaving as specified rather than a bug, but it is worth knowing: if you
+  restore that far back, put your `.gitignore` back before carrying on, or
+  restore the safety snapshot the restore printed.
 - **Submodules are left alone.** A submodule pointer is never restored.
 
 ## Storage
@@ -183,10 +195,12 @@ tool should make for you.
 - Don't point `scrubline watch`'s own output at a file inside the repository it
   is watching: each snapshot writes a log line, which is a change, which
   triggers the next snapshot.
-- Opening the browser links in a terminal UI library that probes the terminal
-  for its background colour at startup, so every command emits a short escape
-  sequence before it runs. Terminals answer it instantly; it is invisible in
-  normal use.
+- Linking in the browser's terminal UI library means a command probes the
+  terminal for its background colour at startup -- but only when its output is a
+  terminal, which a real one answers instantly. Piped or redirected, the way a
+  hook runs it, nothing is emitted at all: measured at zero escape bytes on
+  stdout and stderr for every command, which `TestHookOutputIsFreeOfEscapeCodes`
+  keeps true.
 
 ## Requirements
 

@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 
@@ -83,9 +82,15 @@ func TestRecordDemo(t *testing.T) {
 	m.Update(key("y"))
 	cast.frame(m.View(), 2.2)
 
-	// Quit, and show the deleted file really is back on disk.
-	m.Update(key("q"))
-	cast.shell(repo, "ls src/", listDir(t, filepath.Join(repo, "src")), 2.2)
+	// The browser's own footer reports the outcome, so the recording ends there.
+	// Nothing in the cast is drawn by this recorder: every frame is a View the
+	// tool produced. Only the timing between frames is chosen here.
+	cast.frame(m.View(), 2.6)
+
+	// The restore really did put the deleted file back.
+	if _, err := os.Stat(filepath.Join(repo, "src", "lexer.go")); err != nil {
+		t.Fatalf("the demo did not actually restore src/lexer.go: %v", err)
+	}
 
 	out := filepath.Join("..", "..", "docs", "demo.cast")
 	if err := os.WriteFile(out, []byte(cast.b.String()), 0o644); err != nil {
@@ -118,33 +123,6 @@ func (c *castWriter) frame(view string, hold float64) {
 	c.write("\x1b[2J\x1b[H" + strings.ReplaceAll(view, "\n", "\r\n"))
 	c.at += hold
 	c.frames++
-}
-
-// shell draws a prompt, a typed command, and its real output.
-func (c *castWriter) shell(dir, cmd, output string, hold float64) {
-	c.write("\x1b[2J\x1b[H$ ")
-	for _, r := range cmd {
-		c.at += 0.045
-		c.write(string(r))
-	}
-	c.at += 0.25
-	c.write("\r\n" + strings.ReplaceAll(output, "\n", "\r\n") + "\r\n$ ")
-	c.at += hold
-	c.frames++
-}
-
-func listDir(t *testing.T, dir string) string {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	for _, e := range entries {
-		names = append(names, e.Name())
-	}
-	sort.Strings(names)
-	return strings.Join(names, "  ")
 }
 
 // buildDemoRepo stages the session the demo replays: three agent turns, the
