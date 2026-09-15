@@ -1,0 +1,24 @@
+{
+  "name": "scrubline",
+  "version": "0.1.0",
+  "description": "An undo timeline for the working tree your agent is editing",
+  "license": "MIT",
+  "homepage": "https://github.com/nathanz3491/scrubline",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nathanz3491/scrubline.git"
+  },
+  "keywords": ["undo", "snapshot", "git", "agent", "restore", "timeline"],
+  "bin": {
+    "scrubline": "bin/scrubline.js"
+  },
+  "files": ["bin/", "scripts/", "README.md"],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": ["darwin", "linux", "win32"],
+  "cpu": ["x64", "arm64"]
+}

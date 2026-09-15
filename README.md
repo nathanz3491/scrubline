@@ -50,6 +50,7 @@ go install github.com/nathanz3491/scrubline@latest     # if you have Go
 
 ```sh
 brew install nathanz3491/tap/scrubline                 # once the tap is published
+npx scrubline --help                                   # zero-commitment trial
 ```
 
 Or download a binary from [the releases page](https://github.com/nathanz3491/scrubline/releases).

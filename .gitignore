@@ -3,3 +3,5 @@
 /.gopath/
 /.demo/
 /.frames/
+/npm/vendor/
+/npm/*.tgz
