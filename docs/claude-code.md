@@ -92,7 +92,7 @@ Each command was tested by piping the hook payload to it directly, which is how
 you test a `UserPromptSubmit` or `Stop` hook without waiting for one to fire:
 
 ```sh
-echo '{"prompt":"fix the parser"}' | sh -c '<the command>'
+echo '{"user_prompt":"fix the parser"}' | sh -c '<the command>'
 scrubline list -n 1     # the label should be there
 ```
 
