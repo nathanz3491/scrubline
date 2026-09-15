@@ -31,7 +31,7 @@ Merge this into `.claude/settings.json` in your project, or
           {
             "type": "command",
             "timeout": 10,
-            "command": "command -v scrubline >/dev/null 2>&1 || exit 0; p=$(jq -r \".prompt // .user_prompt // empty\" 2>/dev/null | tr \"\\n\" \" \" | cut -c1-60); scrubline mark \"before: ${p:-a new turn}\" >/dev/null 2>&1; exit 0"
+            "command": "command -v scrubline >/dev/null 2>&1 || exit 0; p=$(jq -r \".user_prompt // .prompt // empty\" 2>/dev/null | tr \"\\n\" \" \" | cut -c1-60); scrubline mark \"before: ${p:-a new turn}\" >/dev/null 2>&1; exit 0"
           }
         ]
       }
@@ -105,12 +105,17 @@ either name record it as the label.
 **Not fired by a live session.** These hooks have been driven by hand with the
 payload shape the hook documentation describes, not by Claude Code itself.
 
-The prompt is read as `.prompt // .user_prompt` on purpose. Claude Code's hook
+The prompt is read as `.user_prompt // .prompt` on purpose. Claude Code's hook
 reference names the `UserPromptSubmit` field `user_prompt`; older notes call it
 `prompt`. Reading both is correct under either spelling and costs nothing, which
 retires the question rather than betting on an answer — and it is the only part
 of this that a hand-written payload cannot settle, because a fixture you wrote
 yourself tests the command against your own assumption about the name.
+
+The documented name is tried first deliberately. The order only has any
+consequence if a payload ever carries both fields *with different text*, and in
+that case `user_prompt` is the one whose meaning is specified while `prompt`
+would be an unknown that happens to share a name.
 
 So the generic `before: a new turn` label should be rare: it means neither field
 was present, or `jq` is not installed. The timeline still works either way; the

@@ -6,7 +6,7 @@
           {
             "type": "command",
             "timeout": 10,
-            "command": "command -v scrubline >/dev/null 2>&1 || exit 0; p=$(jq -r \".prompt // .user_prompt // empty\" 2>/dev/null | tr \"\\n\" \" \" | cut -c1-60); scrubline mark \"before: ${p:-a new turn}\" >/dev/null 2>&1; exit 0"
+            "command": "command -v scrubline >/dev/null 2>&1 || exit 0; p=$(jq -r \".user_prompt // .prompt // empty\" 2>/dev/null | tr \"\\n\" \" \" | cut -c1-60); scrubline mark \"before: ${p:-a new turn}\" >/dev/null 2>&1; exit 0"
           }
         ]
       }
