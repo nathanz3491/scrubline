@@ -994,3 +994,214 @@ func TestPartialRestoreReportsTheSafetySnapshot(t *testing.T) {
 		t.Fatal("the safety snapshot did not restore the pre-restore state")
 	}
 }
+
+// --- renames ---------------------------------------------------------------
+//
+// git reports a rename as a single three-field record while every other status
+// is two fields, so one rename used to desynchronise the plan parser for the
+// rest of the stream. Rename detection is off now; these cover the shapes that
+// produced it.
+
+func TestRestoreCrossesARename(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("helpers.js", "helpers v1\n")
+	r.write("app.js", "app v1\n")
+	r.write("keep.txt", "keep\n")
+	good := r.snap("good")
+	want := r.state()
+
+	// The refactor an agent does constantly: move a file, edit another.
+	r.remove("helpers.js")
+	r.write("lib/helpers.js", "helpers v1\n")
+	r.write("app.js", "app v2 WRECKED\n")
+	r.snap("")
+
+	// The plan must name what actually happens on disk, and the dry run must
+	// agree with it -- the old parser invented a path for both.
+	dry, err := r.tl.Restore(good, RestoreOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	// Path-sorted, and every entry names a real filesystem action.
+	if got := planString(dry.Plan); got != "modify app.js; add helpers.js; delete lib/helpers.js" {
+		t.Fatalf("dry-run plan = %q", got)
+	}
+
+	res, err := r.tl.Restore(good, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if planString(res.Plan) != planString(dry.Plan) {
+		t.Fatalf("the restore did something other than the dry run promised:\n dry %q\n got %q",
+			planString(dry.Plan), planString(res.Plan))
+	}
+	if got := r.state(); !sameState(got, want) {
+		t.Fatalf("tree after restore = %v, want %v", got, want)
+	}
+	if r.exists("lib/helpers.js") {
+		t.Fatal("the renamed-to path was left behind")
+	}
+}
+
+func TestRestoreCrossesARenameWithAnUnrelatedDelete(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("utils.py", "core\n")
+	r.write("utils/__init__.py", "init\n")
+	r.write("keep.txt", "keep\n")
+	good := r.snap("good")
+	want := r.state()
+
+	// Rename and delete in one diff: the record that desynchronised the stream
+	// used to swallow the delete that followed it.
+	r.remove("utils.py")
+	r.write("utils/core.py", "core\n")
+	r.remove("utils/__init__.py")
+	r.snap("")
+
+	if _, err := r.tl.Restore(good, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.state(); !sameState(got, want) {
+		t.Fatalf("tree after restore = %v, want %v", got, want)
+	}
+	if r.exists("utils/core.py") {
+		t.Fatal("the renamed-to path survived")
+	}
+}
+
+func TestRestoreCrossesARenameInsideAChangingDirectory(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("pkg/one.go", "one\n")
+	r.write("pkg/two.go", "two\n")
+	r.write("pkg/three.go", "three\n")
+	good := r.snap("good")
+	want := r.state()
+
+	// The directory holding the rename also gains, loses and edits files.
+	r.remove("pkg/one.go")
+	r.write("pkg/renamed.go", "one\n")
+	r.write("pkg/two.go", "two CHANGED\n")
+	r.remove("pkg/three.go")
+	r.write("pkg/four.go", "four\n")
+	r.snap("")
+
+	if _, err := r.tl.Restore(good, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.state(); !sameState(got, want) {
+		t.Fatalf("tree after restore = %v, want %v", got, want)
+	}
+}
+
+func TestRestoreCrossesARenameOfAnAwkwardFilename(t *testing.T) {
+	r := newTestRepo(t)
+	const odd = "a file with spaces and 🎬 emoji.txt"
+	r.write(odd, "precious\n")
+	r.write("plain.txt", "plain\n")
+	good := r.snap("good")
+	want := r.state()
+
+	r.remove(odd)
+	r.write("nested dir/"+odd, "precious\n")
+	r.snap("")
+
+	if _, err := r.tl.Restore(good, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.state(); !sameState(got, want) {
+		t.Fatalf("tree after restore = %v, want %v", got, want)
+	}
+	if r.read(odd) != "precious\n" {
+		t.Fatal("the awkward path did not come back intact")
+	}
+}
+
+// TestRestoreCrossesManyRenamesOverThePathspecThreshold exercises the branch
+// that lists the whole tree and filters in memory, rather than passing paths as
+// pathspecs, since that branch only runs past 100 paths.
+func TestRestoreCrossesManyRenamesOverThePathspecThreshold(t *testing.T) {
+	r := newTestRepo(t)
+	const n = 150
+	for i := 0; i < n; i++ {
+		r.write(fmt.Sprintf("src/mod%03d.txt", i), fmt.Sprintf("content %d\n", i))
+	}
+	good := r.snap("good")
+	want := r.state()
+
+	for i := 0; i < n; i++ {
+		r.remove(fmt.Sprintf("src/mod%03d.txt", i))
+		r.write(fmt.Sprintf("moved/mod%03d.txt", i), fmt.Sprintf("content %d\n", i))
+	}
+	r.snap("")
+
+	res, err := r.tl.Restore(good, RestoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Plan) != 2*n {
+		t.Fatalf("plan covered %d entries, want %d adds plus %d deletes", len(res.Plan), n, n)
+	}
+	if got := r.state(); !sameState(got, want) {
+		t.Fatal("tree after restore does not match the snapshot")
+	}
+	if r.exists("moved") {
+		t.Fatal("the emptied directory was left behind")
+	}
+}
+
+// TestRestoreWritesEveryPathSharingOneBlob covers the streaming write path:
+// identical files share an object, which is read once and written to each path.
+func TestRestoreWritesEveryPathSharingOneBlob(t *testing.T) {
+	r := newTestRepo(t)
+	for _, p := range []string{"a.txt", "b.txt", "deep/c.txt"} {
+		r.write(p, "identical content\n")
+	}
+	good := r.snap("good")
+
+	for _, p := range []string{"a.txt", "b.txt", "deep/c.txt"} {
+		r.write(p, "WRECKED\n")
+	}
+	if _, err := r.tl.Restore(good, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"a.txt", "b.txt", "deep/c.txt"} {
+		if got := r.read(p); got != "identical content\n" {
+			t.Fatalf("%s = %q, want the shared content", p, got)
+		}
+	}
+}
+
+func TestDescribeCapsALongPlan(t *testing.T) {
+	var plan []Change
+	for i := 0; i < 500; i++ {
+		plan = append(plan, Change{Op: OpModify, Path: fmt.Sprintf("pkg/file%03d.txt", i)})
+	}
+	plan = append(plan, Change{Op: OpDelete, Path: "gone.txt"})
+
+	out := Describe(plan)
+	lines := strings.Split(out, "\n")
+	if len(lines) != DescribeLimit+1 {
+		t.Fatalf("rendered %d lines, want %d listed paths plus one summary", len(lines), DescribeLimit)
+	}
+	summary := lines[len(lines)-1]
+	for _, want := range []string{"and 461 more", "501 paths in total", "500 to modify", "1 to delete"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary %q does not mention %q", summary, want)
+		}
+	}
+
+	// A plan that fits is listed in full, with no summary line.
+	short := plan[:3]
+	if got := strings.Split(Describe(short), "\n"); len(got) != 3 {
+		t.Fatalf("a short plan rendered %d lines, want 3", len(got))
+	}
+}
+
+// planString renders a plan compactly for assertions.
+func planString(plan []Change) string {
+	var parts []string
+	for _, c := range plan {
+		parts = append(parts, string(c.Op)+" "+c.Path)
+	}
+	return strings.Join(parts, "; ")
+}

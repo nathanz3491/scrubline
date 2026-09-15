@@ -70,33 +70,44 @@ func (r *Repo) GitWithIndexStdin(indexPath, input string, args ...string) error 
 	return nil
 }
 
-// CatFileBatch reads many blobs through a single git process.
+// CatFileBatchFunc reads many blobs through a single git process, handing each
+// one to fn as it arrives.
 //
-// The obvious implementation forks one `git cat-file` per file, which costs
-// several milliseconds each: restoring a few thousand files that way takes
+// Two properties matter here. One git process instead of one per file: forking
+// `git cat-file` per blob costs milliseconds each, so a few thousand files took
 // tens of seconds, which behind a keypress in the browser reads as a hang.
-func (r *Repo) CatFileBatch(oids []string) (map[string][]byte, error) {
-	out := make(map[string][]byte, len(oids))
+// And blobs are streamed rather than collected: holding them all would make a
+// restore's memory scale with the total size of the change set instead of with
+// its largest single file, so restoring a few GB of assets would try to
+// allocate a few GB. An OOM kill lands mid-write, which is exactly the
+// partly-rewritten tree the pre-flight work exists to prevent -- and the
+// process dies before it can report the safety snapshot.
+//
+// fn must not retain content: the buffer is only valid for the call.
+func (r *Repo) CatFileBatchFunc(oids []string, fn func(oid string, content []byte) error) error {
 	if len(oids) == 0 {
-		return out, nil
+		return nil
 	}
 
 	cmd := exec.Command("git", "cat-file", "--batch")
 	cmd.Dir = r.Root
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return err
 	}
 
+	// Requests go out on their own goroutine: git blocks writing responses once
+	// the pipe fills, so writing every request up front would deadlock against
+	// a reader that is busy writing files.
 	writeErr := make(chan error, 1)
 	go func() {
 		w := bufio.NewWriter(stdin)
@@ -112,44 +123,51 @@ func (r *Repo) CatFileBatch(oids []string) (map[string][]byte, error) {
 		writeErr <- err
 	}()
 
+	abort := func(err error) error {
+		// Stop git rather than draining a response stream nobody will read.
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+		cmd.Wait()
+		<-writeErr
+		return err
+	}
+
 	reader := bufio.NewReader(stdout)
 	for range oids {
 		header, err := reader.ReadString('\n')
 		if err != nil {
-			cmd.Wait()
-			return nil, fmt.Errorf("git cat-file --batch: %w (%s)", err, strings.TrimSpace(stderr.String()))
+			return abort(fmt.Errorf("git cat-file --batch: %w (%s)", err, strings.TrimSpace(stderr.String())))
 		}
 		fields := strings.Fields(strings.TrimSpace(header))
 		if len(fields) < 3 {
-			cmd.Wait()
-			return nil, fmt.Errorf("git cat-file --batch: unexpected response %q", strings.TrimSpace(header))
+			return abort(fmt.Errorf("git cat-file --batch: unexpected response %q", strings.TrimSpace(header)))
 		}
 		size, err := strconv.Atoi(fields[2])
 		if err != nil {
-			cmd.Wait()
-			return nil, fmt.Errorf("git cat-file --batch: bad size %q", fields[2])
+			return abort(fmt.Errorf("git cat-file --batch: bad size %q", fields[2]))
 		}
 		buf := make([]byte, size)
 		if _, err := io.ReadFull(reader, buf); err != nil {
-			cmd.Wait()
-			return nil, fmt.Errorf("git cat-file --batch: reading %s: %w", fields[0], err)
+			return abort(fmt.Errorf("git cat-file --batch: reading %s: %w", fields[0], err))
 		}
 		// Each record is followed by a newline that is not part of the content.
 		if _, err := reader.Discard(1); err != nil {
-			cmd.Wait()
-			return nil, err
+			return abort(err)
 		}
-		out[fields[0]] = buf
+		if err := fn(fields[0], buf); err != nil {
+			return abort(err)
+		}
 	}
 
 	if err := <-writeErr; err != nil {
 		cmd.Wait()
-		return nil, err
+		return err
 	}
 	if err := cmd.Wait(); err != nil {
-		return nil, fmt.Errorf("git cat-file --batch: %s", strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("git cat-file --batch: %s", strings.TrimSpace(stderr.String()))
 	}
-	return out, nil
+	return nil
 }
 
 // GitRaw runs a git command and returns stdout without trimming, for output

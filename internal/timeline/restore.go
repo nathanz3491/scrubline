@@ -298,7 +298,20 @@ func (t *Timeline) plan(currentTree, targetTree, only string) ([]Change, error) 
 	if currentTree == targetTree {
 		return nil, nil
 	}
-	out, err := t.Repo.GitRaw("diff", "--name-status", "-z", currentTree, targetTree)
+	// Rename detection is disabled deliberately, and the parser below depends
+	// on it. With detection on, a rename is a single three-field record
+	// (R100, old, new) while everything else is two fields, and one of them
+	// desynchronises the whole stream: statuses get read as paths and later
+	// records are dropped entirely.
+	//
+	// Turning it off is not a workaround for the parser -- it is the right
+	// model. A restore is a filesystem operation, and on disk a rename *is* a
+	// delete plus an add: that is what has to happen to the files. There is no
+	// distinct action behind a rename record, so decoding one would only mean
+	// re-deriving the delete and the add that `--no-renames` hands over
+	// directly. Every record is two fields, so the parser is correct by
+	// construction rather than by careful handling.
+	out, err := t.Repo.GitRaw("-c", "diff.renames=false", "diff", "--name-status", "-z", currentTree, targetTree)
 	if err != nil {
 		return nil, err
 	}
@@ -316,8 +329,15 @@ func (t *Timeline) plan(currentTree, targetTree, only string) ([]Change, error) 
 			op = OpAdd
 		case strings.HasPrefix(status, "D"):
 			op = OpDelete
-		default:
+		case strings.HasPrefix(status, "M"), strings.HasPrefix(status, "T"):
 			op = OpModify
+		default:
+			// R and C records carry an extra field and would desynchronise the
+			// stream; they cannot appear with rename detection off. Anything
+			// else is a git reporting a status this parser does not know, and
+			// guessing at one is exactly how the rename bug did its damage.
+			return nil, fmt.Errorf("unexpected %q record for %q in the diff: "+
+				"this git reports statuses %s does not understand", status, path, meta.Name)
 		}
 		plan = append(plan, Change{Op: op, Path: path})
 	}
@@ -336,6 +356,20 @@ func matchesPath(path, only string) bool {
 }
 
 func (t *Timeline) apply(targetTree string, plan []Change) error {
+	// Deletes run first so that a path being freed is gone before anything is
+	// written into it, and so pruning an emptied directory cannot remove one a
+	// later write just created.
+	for _, c := range plan {
+		if c.Op != OpDelete {
+			continue
+		}
+		abs := filepath.Join(t.Repo.Root, filepath.FromSlash(c.Path))
+		if err := remove(abs); err != nil {
+			return fmt.Errorf("removing %s: %w", c.Path, err)
+		}
+		pruneEmptyDirs(t.Repo.Root, filepath.Dir(abs))
+	}
+
 	var wanted []string
 	for _, c := range plan {
 		if c.Op == OpAdd || c.Op == OpModify {
@@ -347,43 +381,35 @@ func (t *Timeline) apply(targetTree string, plan []Change) error {
 		return err
 	}
 
-	// Read every blob through one git process rather than one per file.
+	// Group paths by object id: identical files share a blob, so each one is
+	// read once and written to every path that wants it.
+	byOID := make(map[string][]string, len(wanted))
 	oids := make([]string, 0, len(wanted))
-	seen := make(map[string]bool, len(wanted))
 	for _, path := range wanted {
 		e, ok := entries[path]
-		if !ok || e.Mode == "160000" || seen[e.OID] {
+		if !ok {
+			return fmt.Errorf("%s is missing from snapshot tree %s", path, targetTree)
+		}
+		if e.Mode == submoduleMode {
 			continue
 		}
-		seen[e.OID] = true
-		oids = append(oids, e.OID)
-	}
-	blobs, err := t.Repo.CatFileBatch(oids)
-	if err != nil {
-		return err
+		if _, seen := byOID[e.OID]; !seen {
+			oids = append(oids, e.OID)
+		}
+		byOID[e.OID] = append(byOID[e.OID], path)
 	}
 
-	for _, c := range plan {
-		abs := filepath.Join(t.Repo.Root, filepath.FromSlash(c.Path))
-		switch c.Op {
-		case OpSkip:
-			continue
-		case OpDelete:
-			if err := remove(abs); err != nil {
-				return fmt.Errorf("removing %s: %w", c.Path, err)
-			}
-			pruneEmptyDirs(t.Repo.Root, filepath.Dir(abs))
-		case OpAdd, OpModify:
-			e, ok := entries[c.Path]
-			if !ok {
-				return fmt.Errorf("%s is missing from snapshot tree %s", c.Path, targetTree)
-			}
-			if err := writeEntry(abs, c.Path, e, blobs[e.OID]); err != nil {
+	// Blobs are written as they arrive rather than collected first, so memory
+	// scales with the largest file in the restore, not with the sum of them.
+	return t.Repo.CatFileBatchFunc(oids, func(oid string, content []byte) error {
+		for _, path := range byOID[oid] {
+			abs := filepath.Join(t.Repo.Root, filepath.FromSlash(path))
+			if err := writeEntry(abs, path, entries[path], content); err != nil {
 				return err
 			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 type treeEntry struct {
@@ -438,8 +464,12 @@ func (t *Timeline) treeEntries(tree string, paths []string) (map[string]treeEntr
 	return entries, nil
 }
 
+// submoduleMode is git's mode for a gitlink: a pointer to another repository's
+// commit, which scrubline deliberately does not follow.
+const submoduleMode = "160000"
+
 func writeEntry(abs, path string, e treeEntry, content []byte) error {
-	if e.Mode == "160000" {
+	if e.Mode == submoduleMode {
 		// A submodule pointer; restoring it would mean recursing into another
 		// repository, which scrubline deliberately does not do.
 		return nil
@@ -494,13 +524,24 @@ func pruneEmptyDirs(root, dir string) {
 	}
 }
 
-// Describe renders a plan for humans.
+// DescribeLimit is how many paths a rendered plan lists before summarising the
+// rest. Restoring a repository that has node_modules in its snapshots can mean
+// tens of thousands of entries, and printing all of them buries the outcome in
+// megabytes of scrollback.
+const DescribeLimit = 40
+
+// Describe renders a plan for humans, listing at most DescribeLimit paths.
 func Describe(plan []Change) string {
 	if len(plan) == 0 {
 		return fmt.Sprintf("the working tree already matches this snapshot, %s would change nothing", meta.Name)
 	}
+
 	var b strings.Builder
-	for _, c := range plan {
+	shown := plan
+	if len(shown) > DescribeLimit {
+		shown = shown[:DescribeLimit]
+	}
+	for _, c := range shown {
 		switch c.Op {
 		case OpAdd:
 			fmt.Fprintf(&b, "  add     %s\n", c.Path)
@@ -512,5 +553,24 @@ func Describe(plan []Change) string {
 			fmt.Fprintf(&b, "  skip    %s (git ignores it now)\n", c.Path)
 		}
 	}
+	if rest := len(plan) - len(shown); rest > 0 {
+		fmt.Fprintf(&b, "  ... and %d more (%d paths in total: %s)\n", rest, len(plan), tally(plan))
+	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// tally summarises a plan by operation, so a capped listing still says what the
+// restore is going to do.
+func tally(plan []Change) string {
+	counts := map[Op]int{}
+	for _, c := range plan {
+		counts[c.Op]++
+	}
+	var parts []string
+	for _, op := range []Op{OpAdd, OpModify, OpDelete, OpSkip} {
+		if n := counts[op]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d to %s", n, op))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
