@@ -50,6 +50,21 @@ changelog:
       - '^test:'
       - '^chore:'
 
+# Publishing needs a github.com/nathanz3491/homebrew-tap repository and a token
+# with access to it. Until that exists this block is configuration only --
+# `goreleaser check` validates it, but it has never published.
+homebrew_casks:
+  - name: scrubline
+    repository:
+      owner: nathanz3491
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/nathanz3491/scrubline
+    description: An undo timeline for the working tree your agent is editing
+    license: MIT
+    skip_upload: auto
+
 release:
   draft: false
   prerelease: auto
