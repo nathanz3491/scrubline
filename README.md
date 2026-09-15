@@ -141,18 +141,22 @@ Restore is the dangerous direction, so:
   applied cleanly it is refused before anything is written, and on the rare
   failure that only shows up mid-write, the id you need is printed along with a
   plain statement that the tree is partly rewritten.
-- **What git ignores right now, scrubline does not touch** -- it is not
-  recorded, not written, and not deleted. Your `node_modules/`, your `.env`,
+- **What your ignore rules match right now, scrubline does not touch** -- it is
+  not recorded, not written, and not deleted. Your `node_modules/`, your `.env`,
   your build output, and your local database are not part of this. The rule is
-  read fresh every time and applied in both directions, so ignoring a file is
-  enough to keep it out of scrubline's way from that moment on, including files
-  that were snapshotted before you ignored them.
+  read fresh every time and applied in both directions, so adding a file to your
+  ignore rules is enough to keep it out of scrubline's way from that moment on,
+  including files that were snapshotted before you added it. The rule is your
+  ignore *patterns*, whether or not git tracks the file -- a slightly larger set
+  than the files git itself ignores, which Known limits spells out.
 - **A plan that cannot be applied is refused whole.** A file that is now a
   directory, a read-only file, an unwritable directory: all of them stop the
   restore before the first write, list every problem at once, and leave the
   timeline clean -- no half-rewritten tree, and no safety snapshot minted for an
   attempt that did not happen.
-- **`--dry-run` shows the exact file-level plan** and touches nothing.
+- **`--dry-run` shows the file-level plan** and touches nothing. Plans longer
+  than 40 paths list the first 40 and summarise the rest by operation, rather
+  than filling your scrollback.
 - **A `--path` that matches nothing is an error**, not a quiet success.
 - **Nothing happens without a git repository.** `scrubline` refuses to run
   outside one rather than guessing what your project is.
@@ -172,7 +176,7 @@ These are real and worth knowing before you rely on restore:
   will show restored files as modified. Restore is byte-identical on macOS and
   Linux; on Windows it is line-ending-normalised.
 - **Ignore rules are current, not historical.** Because the ignore decision is
-  always "what does git ignore right now", a snapshot is not guaranteed to
+  always "what do the ignore rules match right now", a snapshot is not guaranteed to
   reproduce your directory exactly if your ignore rules changed in between. The
   contract is that restore puts back the files scrubline manages -- not that it
   recreates your directory. The alternative would mean writing a secret back
@@ -185,6 +189,37 @@ These are real and worth knowing before you rely on restore:
   above behaving as specified rather than a bug, but it is worth knowing: if you
   restore that far back, put your `.gitignore` back before carrying on, or
   restore the safety snapshot the restore printed.
+- **A tracked file that matches an ignore pattern is outside scrubline.** If
+  `.gitignore` says `dist/` but `dist/index.html` is committed, git itself does
+  not ignore that file -- `git status` reports your edits to it, and
+  `git check-ignore` does not list it, because both consult the index. scrubline
+  stages into a private index that starts empty, so ignore patterns are applied
+  to every path regardless of what your repository tracks; the effective rule is
+  `git check-ignore --no-index`. Such a file is therefore never recorded. It
+  cuts both ways: it is never at risk from a restore, and equally a restore will
+  not bring it back, while still reporting success. If you deliberately track
+  files your ignore rules also match, they are not covered here.
+- **A directory standing where a file belongs is refused, even when scrubline
+  put every file in it.** Undoing an agent that split `utils.py` into a
+  `utils/` package means replacing a directory with a file, and the restore
+  refuses rather than clearing the directory -- it has no safe way to know that
+  nothing else lives in there. Remove the directory yourself and run the restore
+  again. This is a deliberate choice: the alternative is directory-removal logic
+  on the restore path, and the cost of getting that subtly wrong is exactly what
+  this tool exists to prevent.
+- **One read-only file refuses the whole restore.** Pre-flight treats an
+  unwritable file as a reason to refuse everything, which is stricter than
+  `git checkout --`, which replaces a read-only file without complaint. A single
+  vendored `chmod 444` config can therefore block a recovery. `chmod +w` it and
+  retry. Refusing whole beats a half-written tree, but it is stricter than it
+  strictly needs to be.
+- **A case-only rename can lose the file, with `core.ignorecase=false` on a
+  case-insensitive filesystem.** In that combination the index holds both
+  spellings while the disk holds one file, and restoring to the snapshot with
+  the other spelling produces a plan whose only action is to delete it. It
+  reports success. The safety snapshot it prints recovers the content. This
+  needs a non-default git setting: under the macOS default (`ignorecase=true`)
+  git collapses the two spellings and the restore is a clean no-op.
 - **Submodules are left alone.** A submodule pointer is never restored.
 
 ## Storage
