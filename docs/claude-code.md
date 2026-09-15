@@ -31,7 +31,7 @@ Merge this into `.claude/settings.json` in your project, or
           {
             "type": "command",
             "timeout": 10,
-            "command": "command -v scrubline >/dev/null 2>&1 || exit 0; p=$(jq -r \".prompt // empty\" 2>/dev/null | tr \"\\n\" \" \" | cut -c1-60); scrubline mark \"before: ${p:-a new turn}\" >/dev/null 2>&1; exit 0"
+            "command": "command -v scrubline >/dev/null 2>&1 || exit 0; p=$(jq -r \".prompt // .user_prompt // empty\" 2>/dev/null | tr \"\\n\" \" \" | cut -c1-60); scrubline mark \"before: ${p:-a new turn}\" >/dev/null 2>&1; exit 0"
           }
         ]
       }
@@ -96,17 +96,25 @@ echo '{"prompt":"fix the parser"}' | sh -c '<the command>'
 scrubline list -n 1     # the label should be there
 ```
 
-Confirmed that way: a payload with a prompt, a payload without one, a prompt
-containing quotes, backticks and newlines, a missing `scrubline`, a missing
-`jq`, and a directory that is not a git repository. All exit 0 and print
-nothing; the first three record the label.
+Confirmed that way: a payload carrying `user_prompt`, one carrying `prompt`,
+one carrying both, one carrying neither, a prompt containing quotes, backticks
+and newlines, a missing `scrubline`, a missing `jq`, and a directory that is not
+a git repository. All exit 0 and print nothing; the ones with a prompt under
+either name record it as the label.
 
-**Not confirmed against a live session.** These hooks have not been fired by
-Claude Code itself, only driven by hand with the payload shape its hook
-documentation describes. In particular, the `prompt` field is not part of the
-documented payload — the fallback exists precisely because it may not be there.
-If your labels all read `before: a new turn`, that is what happened, and the
-timeline still works; the labels are just less useful.
+**Not fired by a live session.** These hooks have been driven by hand with the
+payload shape the hook documentation describes, not by Claude Code itself.
+
+The prompt is read as `.prompt // .user_prompt` on purpose. Claude Code's hook
+reference names the `UserPromptSubmit` field `user_prompt`; older notes call it
+`prompt`. Reading both is correct under either spelling and costs nothing, which
+retires the question rather than betting on an answer — and it is the only part
+of this that a hand-written payload cannot settle, because a fixture you wrote
+yourself tests the command against your own assumption about the name.
+
+So the generic `before: a new turn` label should be rare: it means neither field
+was present, or `jq` is not installed. The timeline still works either way; the
+labels are just less useful.
 
 To check a hook is live, run `/hooks` in Claude Code.
 
