@@ -53,13 +53,24 @@ func (r *Repo) GitRaw(args ...string) (string, error) {
 }
 
 // CommitTree writes a commit object with the given tree and optional parent.
+//
+// The identity is fixed rather than taken from the user's git config: snapshots
+// are private to the machine and never pushed, and a user who has not set
+// user.email should still be able to record their work.
 func (r *Repo) CommitTree(tree, parent, message string) (string, error) {
 	args := []string{"commit-tree", tree}
 	if parent != "" {
 		args = append(args, "-p", parent)
 	}
 	args = append(args, "-m", message)
-	return r.Git(args...)
+	return run(r.Root, identityEnv, args...)
+}
+
+var identityEnv = []string{
+	"GIT_AUTHOR_NAME=scrubline",
+	"GIT_AUTHOR_EMAIL=scrubline@localhost",
+	"GIT_COMMITTER_NAME=scrubline",
+	"GIT_COMMITTER_EMAIL=scrubline@localhost",
 }
 
 // Resolve turns a revision string into a full object id.
