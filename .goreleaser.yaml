@@ -50,20 +50,27 @@ changelog:
       - '^test:'
       - '^chore:'
 
-# Publishing needs a github.com/nathanz3491/homebrew-tap repository and a token
-# with access to it. Until that exists this block is configuration only --
-# `goreleaser check` validates it, but it has never published.
-homebrew_casks:
-  - name: scrubline
-    repository:
-      owner: nathanz3491
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Casks
-    homepage: https://github.com/nathanz3491/scrubline
-    description: An undo timeline for the working tree your agent is editing
-    license: MIT
-    skip_upload: auto
+# Homebrew tap publishing is disabled until the tap exists.
+#
+# This is commented out rather than switched off, on purpose: the block
+# referenced {{ .Env.HOMEBREW_TAP_TOKEN }}, and a template referencing an
+# environment variable that does not exist fails the release job outright --
+# it would take the binaries down with it, for an optional extra. There is no
+# way to half-enable that safely, so it is gone until there is a token.
+#
+# To turn it on: create github.com/nathanz3491/homebrew-tap, add a token with
+# write access to it as the HOMEBREW_TAP_TOKEN secret, and uncomment.
+#
+# homebrew_casks:
+#   - name: scrubline
+#     repository:
+#       owner: nathanz3491
+#       name: homebrew-tap
+#       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+#     directory: Casks
+#     homepage: https://github.com/nathanz3491/scrubline
+#     description: An undo timeline for the working tree your agent is editing
+#     license: MIT
 
 release:
   draft: false
